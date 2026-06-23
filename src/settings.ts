@@ -7,6 +7,7 @@ export interface TagSuggestSettings {
   aiModel: 'chatgpt' | 'ollama' | 'deepseek';
   deepseekApiKey: string;
   systemPromptNotePath: string;
+  systemPromptTitleNotePath: string;
 }
 
 export const DEFAULT_SETTINGS: TagSuggestSettings = {
@@ -18,4 +19,5 @@ export const DEFAULT_SETTINGS: TagSuggestSettings = {
   aiModel: 'chatgpt',
   deepseekApiKey: '',
   systemPromptNotePath: '',
+  systemPromptTitleNotePath: '',
 };

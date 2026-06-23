@@ -200,8 +200,8 @@ export class TagSuggestSettingTab extends PluginSettingTab {
     }
 
     new Setting(containerEl)
-      .setName('系统提示词笔记')
-      .setDesc('选择一篇笔记作为 AI 的规则指令（留空则使用默认提示词）')
+      .setName('标签提示词笔记')
+      .setDesc('选择一篇笔记作为标签推荐的 AI 规则指令（留空则使用默认提示词）')
       .addText((text) =>
         text
           .setPlaceholder('未设置（使用默认提示词）')
@@ -217,6 +217,30 @@ export class TagSuggestSettingTab extends PluginSettingTab {
           .onClick(() => {
             new SystemPromptFileModal(this.app, async (path) => {
               this.plugin.settings.systemPromptNotePath = path;
+              await this.plugin.saveSettings();
+              this.display();
+            }).open();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName('标题提示词笔记')
+      .setDesc('选择一篇笔记作为标题生成的 AI 规则指令（留空则使用默认提示词）')
+      .addText((text) =>
+        text
+          .setPlaceholder('未设置（使用默认提示词）')
+          .setValue(this.plugin.settings.systemPromptTitleNotePath)
+          .onChange(async (value) => {
+            this.plugin.settings.systemPromptTitleNotePath = value;
+            await this.plugin.saveSettings();
+          }),
+      )
+      .addButton((btn) =>
+        btn
+          .setButtonText('选择笔记')
+          .onClick(() => {
+            new SystemPromptFileModal(this.app, async (path) => {
+              this.plugin.settings.systemPromptTitleNotePath = path;
               await this.plugin.saveSettings();
               this.display();
             }).open();

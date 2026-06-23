@@ -4,7 +4,8 @@ import { TagSuggestSettings, DEFAULT_SETTINGS } from './settings';
 import { TagSuggestModal } from './suggest-modal';
 import { BatchSuggestModal } from './batch-modal';
 import { TagSuggestSettingTab } from './settings-tab';
-import { suggestTags } from './api';
+import { RenameModal } from './rename-modal';
+import { suggestTags, suggestTitle } from './api';
 
 const TAG_ICON = `<svg viewBox="0 0 1024 1024" width="100" height="100" xmlns="http://www.w3.org/2000/svg">
   <path fill="currentColor" d="M426.08 649.232l56.576 56.56L690.544 497.92l-56.56-56.56L426.08 649.232z m100.64-315.136L318.832 541.984l56.56 56.56 207.888-207.888-56.56-56.56zM957.424 58.912L502.4 31.952 25.616 508.384l488.56 488.512 477.008-476.64-33.76-461.344zM514.192 883.792L138.784 508.4 533.552 113.936 882.72 134.64l25.984 354.912-394.528 394.24z m162.896-638.752a72 72 0 1 0 101.84 101.824 72 72 0 1 0-101.84-101.824z"/>
@@ -24,12 +25,22 @@ export class TagSuggestPlugin extends Plugin {
       this.suggestTags();
     });
 
+    this.addRibbonIcon('pencil', '为当前文档生成标题', () => {
+      this.suggestTitle();
+    });
+
     this.addSettingTab(new TagSuggestSettingTab(this.app, this));
 
     this.addCommand({
       id: 'suggest-tags',
       name: '为当前文档推荐标签',
       callback: () => this.suggestTags(),
+    });
+
+    this.addCommand({
+      id: 'suggest-title',
+      name: '为当前文档生成标题',
+      callback: () => this.suggestTitle(),
     });
 
     this.addCommand({
@@ -46,6 +57,12 @@ export class TagSuggestPlugin extends Plugin {
               .setTitle('AI 生成标签')
               .setIcon('suggest-tags')
               .onClick(() => this.suggestTags(file));
+          });
+          menu.addItem((item) => {
+            item
+              .setTitle('AI 重命名')
+              .setIcon('suggest-tags')
+              .onClick(() => this.suggestTitle(file));
           });
         } else if (file instanceof TFolder) {
           menu.addItem((item) => {
@@ -103,6 +120,15 @@ export class TagSuggestPlugin extends Plugin {
     return null;
   }
 
+  async getSystemPromptTitleContent(): Promise<string | null> {
+    if (!this.settings.systemPromptTitleNotePath) return null;
+    const file = this.app.vault.getAbstractFileByPath(this.settings.systemPromptTitleNotePath);
+    if (file instanceof TFile) {
+      return await this.app.vault.read(file);
+    }
+    return null;
+  }
+
   async getAllExistingTags(): Promise<string[]> {
     const files = this.app.vault.getMarkdownFiles();
     const tagSet = new Set<string>();
@@ -154,6 +180,27 @@ export class TagSuggestPlugin extends Plugin {
     } catch (e) {
       console.error('生成标签失败:', e);
       new Notice('生成标签失败: ' + (e as Error).message);
+    }
+  }
+
+  async suggestTitle(file?: TFile) {
+    const targetFile = file || this.app.workspace.getActiveFile();
+    if (!targetFile) {
+      new Notice('没有选择文件');
+      return;
+    }
+    try {
+      new Notice('正在生成标题...');
+      const content = await this.app.vault.read(targetFile);
+      const title = await suggestTitle(this, content);
+      if (title) {
+        new RenameModal(this.app, targetFile, title).open();
+      } else {
+        new Notice('未能生成标题');
+      }
+    } catch (e) {
+      console.error('生成标题失败:', e);
+      new Notice('生成标题失败: ' + (e as Error).message);
     }
   }
 
