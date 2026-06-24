@@ -168,6 +168,79 @@ export async function suggestTitle(plugin: TagSuggestPlugin, content: string): P
   }
 }
 
+export interface CleanupOp {
+  type: 'merge' | 'delete';
+  from?: string;
+  to?: string;
+  tag?: string;
+}
+
+export async function suggestTagCleanup(
+  plugin: TagSuggestPlugin,
+  tagsWithCount: [string, number][],
+  principles: string,
+): Promise<CleanupOp[]> {
+  const tagListStr = tagsWithCount.map(([t, c]) => `"${t}" (${c}次)`).join('\n');
+  const systemPrompt = `你是一个标签管理专家。请根据用户的原则和标签使用情况，决定哪些标签需要合并或删除。
+只返回 JSON 数组，不要包含其他文字。JSON 格式：
+[
+  {"type":"merge","from":"旧标签","to":"目标标签"},
+  {"type":"delete","tag":"要删除的标签"}
+]`;
+
+  const userContent = `原则：
+${principles || '无特殊原则，自行判断'}
+
+当前库所有标签及使用次数：
+${tagListStr}
+
+请分析并返回 JSON 操作数组。`;
+
+  switch (plugin.settings.aiModel) {
+    case 'ollama': {
+      if (!plugin.settings.ollamaHost) throw new Error('请先设置 Ollama 主机地址');
+      const res = await fetch(`${plugin.settings.ollamaHost}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: plugin.settings.ollamaModel, prompt: `${systemPrompt}\n\n${userContent}`, stream: false }),
+      });
+      if (!res.ok) throw new Error(`Ollama 请求失败: ${res.status}`);
+      const d = await res.json();
+      return parseCleanupResponse(d.response || '[]');
+    }
+    case 'deepseek': {
+      if (!plugin.settings.deepseekApiKey) throw new Error('请先设置 DeepSeek API Key');
+      const res = await fetch('https://api.deepseek.com/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${plugin.settings.deepseekApiKey}` },
+        body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userContent }], stream: false }),
+      });
+      if (!res.ok) throw new Error(`DeepSeek 请求失败: ${res.status}`);
+      const d = await res.json();
+      return parseCleanupResponse(d.choices[0]?.message?.content || '[]');
+    }
+    default: {
+      if (!plugin.settings.apiKey) throw new Error('请先设置 ChatGPT API Key');
+      const res = await plugin.openai.chat.completions.create({
+        model: 'gpt-3.5-turbo',
+        messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userContent }],
+      });
+      return parseCleanupResponse(res.choices[0]?.message?.content || '[]');
+    }
+  }
+}
+
+function parseCleanupResponse(text: string): CleanupOp[] {
+  const jsonMatch = text.match(/\[[\s\S]*?\]/);
+  if (!jsonMatch) return [];
+  try {
+    const ops: CleanupOp[] = JSON.parse(jsonMatch[0]);
+    return ops.filter((o) => o.type === 'merge' || o.type === 'delete');
+  } catch {
+    return [];
+  }
+}
+
 export async function suggestTags(plugin: TagSuggestPlugin, content: string): Promise<string[]> {
   switch (plugin.settings.aiModel) {
     case 'ollama':

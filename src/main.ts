@@ -5,7 +5,7 @@ import { TagSuggestModal } from './suggest-modal';
 import { BatchSuggestModal } from './batch-modal';
 import { TagSuggestSettingTab } from './settings-tab';
 import { RenameModal } from './rename-modal';
-import { suggestTags, suggestTitle } from './api';
+import { suggestTags, suggestTitle, suggestTagCleanup, CleanupOp } from './api';
 
 const TAG_ICON = `<svg viewBox="0 0 1024 1024" width="100" height="100" xmlns="http://www.w3.org/2000/svg">
   <path fill="currentColor" d="M426.08 649.232l56.576 56.56L690.544 497.92l-56.56-56.56L426.08 649.232z m100.64-315.136L318.832 541.984l56.56 56.56 207.888-207.888-56.56-56.56zM957.424 58.912L502.4 31.952 25.616 508.384l488.56 488.512 477.008-476.64-33.76-461.344zM514.192 883.792L138.784 508.4 533.552 113.936 882.72 134.64l25.984 354.912-394.528 394.24z m162.896-638.752a72 72 0 1 0 101.84 101.824 72 72 0 1 0-101.84-101.824z"/>
@@ -29,6 +29,10 @@ export class TagSuggestPlugin extends Plugin {
       this.suggestTitle();
     });
 
+    this.addRibbonIcon('sparkles', 'AI 整理标签', () => {
+      this.autoManageTags();
+    });
+
     this.addSettingTab(new TagSuggestSettingTab(this.app, this));
 
     this.addCommand({
@@ -41,6 +45,12 @@ export class TagSuggestPlugin extends Plugin {
       id: 'suggest-title',
       name: '为当前文档生成标题',
       callback: () => this.suggestTitle(),
+    });
+
+    this.addCommand({
+      id: 'auto-manage-tags',
+      name: 'AI 整理标签',
+      callback: () => this.autoManageTags(),
     });
 
     this.addCommand({
@@ -201,6 +211,112 @@ export class TagSuggestPlugin extends Plugin {
     } catch (e) {
       console.error('生成标题失败:', e);
       new Notice('生成标题失败: ' + (e as Error).message);
+    }
+  }
+
+  async getAllTagsWithCount(): Promise<[string, number][]> {
+    const countMap = new Map<string, number>();
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      if (cache?.tags) {
+        for (const t of cache.tags) {
+          const tag = t.tag.replace(/^#/, '');
+          countMap.set(tag, (countMap.get(tag) || 0) + 1);
+        }
+      }
+    }
+    return Array.from(countMap.entries()).sort((a, b) => b[1] - a[1]);
+  }
+
+  async modifyTagsInFile(file: TFile, modifier: (tags: string[]) => string[]): Promise<boolean> {
+    const content = await this.app.vault.read(file);
+    let frontmatter: string | null = null;
+    let body = content;
+
+    if (content.startsWith('---')) {
+      const lines = content.split('\n');
+      let endIdx = -1;
+      for (let i = 1; i < lines.length; i++) {
+        if (lines[i].trimEnd() === '---') {
+          endIdx = i;
+          break;
+        }
+      }
+      if (endIdx !== -1) {
+        frontmatter = lines.slice(1, endIdx).join('\n');
+        body = lines.slice(endIdx + 1).join('\n');
+      }
+    }
+
+    if (frontmatter === null) return false;
+
+    const fmLines = frontmatter.split('\n');
+    const tagIdx = fmLines.findIndex((l) => /^\s*tags:/i.test(l));
+    if (tagIdx === -1) return false;
+
+    const line = fmLines[tagIdx];
+    const bracketMatch = line.match(/^(\s*tags:\s*)(\[?)([^\]]*)(\]?)\s*$/i);
+    if (!bracketMatch) return false;
+
+    const currentTags = bracketMatch[3].split(',').map((t) => t.trim()).filter(Boolean);
+    const newTags = modifier(currentTags);
+
+    if (newTags.length === currentTags.length && newTags.every((t, i) => t === currentTags[i])) {
+      return false;
+    }
+
+    fmLines[tagIdx] = newTags.length > 0 ? `tags: [${newTags.join(', ')}]` : 'tags: []';
+    await this.app.vault.modify(file, `---\n${fmLines.join('\n')}\n---\n${body}`);
+    return true;
+  }
+
+  async autoManageTags() {
+    try {
+      new Notice('正在扫描标签...');
+      const tagsWithCount = await this.getAllTagsWithCount();
+
+      if (tagsWithCount.length === 0) {
+        new Notice('库中没有标签');
+        return;
+      }
+
+      new Notice('正在分析标签...');
+      const ops = await suggestTagCleanup(this, tagsWithCount, this.settings.tagManagePrinciples);
+
+      if (ops.length === 0) {
+        new Notice('AI 认为当前标签无需整理');
+        return;
+      }
+
+      let merged = 0, deleted = 0;
+      const allFiles = this.app.vault.getMarkdownFiles();
+
+      for (const op of ops) {
+        if (op.type === 'merge' && op.from && op.to) {
+          for (const file of allFiles) {
+            const changed = await this.modifyTagsInFile(file, (tags) => {
+              const hasFrom = tags.includes(op.from!);
+              if (!hasFrom) return tags;
+              const filtered = tags.filter((t) => t !== op.from!);
+              if (!filtered.includes(op.to!)) filtered.push(op.to!);
+              return filtered;
+            });
+            if (changed) merged++;
+          }
+        } else if (op.type === 'delete' && op.tag) {
+          for (const file of allFiles) {
+            const changed = await this.modifyTagsInFile(file, (tags) => {
+              return tags.filter((t) => t !== op.tag!);
+            });
+            if (changed) deleted++;
+          }
+        }
+      }
+
+      new Notice(`整理完成！合并 ${merged} 次，删除 ${deleted} 次`);
+    } catch (e) {
+      console.error('整理标签失败:', e);
+      new Notice('整理标签失败: ' + (e as Error).message);
     }
   }
 

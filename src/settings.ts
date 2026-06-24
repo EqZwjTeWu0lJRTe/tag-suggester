@@ -8,6 +8,7 @@ export interface TagSuggestSettings {
   deepseekApiKey: string;
   systemPromptNotePath: string;
   systemPromptTitleNotePath: string;
+  tagManagePrinciples: string;
 }
 
 export const DEFAULT_SETTINGS: TagSuggestSettings = {
@@ -20,4 +21,5 @@ export const DEFAULT_SETTINGS: TagSuggestSettings = {
   deepseekApiKey: '',
   systemPromptNotePath: '',
   systemPromptTitleNotePath: '',
+  tagManagePrinciples: '',
 };

@@ -260,5 +260,32 @@ export class TagSuggestSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           }),
       );
+
+    containerEl.createEl('h2', { text: '标签整理' });
+
+    new Setting(containerEl)
+      .setName('整理原则')
+      .setDesc('告诉 AI 如何整理标签（如：合并同义词、删除低频标签、中文优先等）')
+      .addTextArea((text) =>
+        text
+          .setPlaceholder('例：合并同义词标签，删除少于2个文件的低频标签，中文标签优先保留')
+          .setValue(this.plugin.settings.tagManagePrinciples)
+          .onChange(async (value) => {
+            this.plugin.settings.tagManagePrinciples = value;
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName('执行整理')
+      .setDesc('AI 将扫描全库标签，根据原则自动合并和删除')
+      .addButton((btn) =>
+        btn
+          .setButtonText('AI 整理标签')
+          .setCta()
+          .onClick(() => {
+            this.plugin.autoManageTags();
+          }),
+      );
   }
 }
