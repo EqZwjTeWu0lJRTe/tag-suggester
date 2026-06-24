@@ -182,6 +182,10 @@ export async function suggestTagCleanup(
 ): Promise<CleanupOp[]> {
   const tagListStr = tagsWithCount.map(([t, c]) => `"${t}" (${c}次)`).join('\n');
   const systemPrompt = `你是一个标签管理专家。请根据用户的原则和标签使用情况，决定哪些标签需要合并或删除。
+判断"无意义标签"的标准：
+- 乱码、测试字符、无实际含义的拼音组合
+- 只出现1次且不是规范词
+- 明显是键盘乱敲的内容
 只返回 JSON 数组，不要包含其他文字。JSON 格式：
 [
   {"type":"merge","from":"旧标签","to":"目标标签"},

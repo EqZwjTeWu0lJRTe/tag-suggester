@@ -140,15 +140,27 @@ export class TagSuggestPlugin extends Plugin {
   }
 
   async getAllExistingTags(): Promise<string[]> {
-    const files = this.app.vault.getMarkdownFiles();
     const tagSet = new Set<string>();
 
-    for (const file of files) {
+    const addTag = (tag: string) => {
+      const t = tag.replace(/^#/, '').trim();
+      if (t) tagSet.add(t);
+    };
+
+    for (const file of this.app.vault.getMarkdownFiles()) {
       const cache = this.app.metadataCache.getFileCache(file);
+
       if (cache?.tags) {
-        cache.tags.forEach((t) => {
-          tagSet.add(t.tag.replace('#', ''));
-        });
+        cache.tags.forEach((t) => addTag(t.tag));
+      }
+
+      if (cache?.frontmatter?.tags) {
+        const fmTags = cache.frontmatter.tags;
+        if (typeof fmTags === 'string') {
+          fmTags.split(/[, ]/).filter(Boolean).forEach(addTag);
+        } else if (Array.isArray(fmTags)) {
+          fmTags.forEach(addTag);
+        }
       }
     }
 
@@ -216,57 +228,110 @@ export class TagSuggestPlugin extends Plugin {
 
   async getAllTagsWithCount(): Promise<[string, number][]> {
     const countMap = new Map<string, number>();
+
+    const addTag = (tag: string) => {
+      const t = tag.replace(/^#/, '').trim();
+      if (t) countMap.set(t, (countMap.get(t) || 0) + 1);
+    };
+
     for (const file of this.app.vault.getMarkdownFiles()) {
       const cache = this.app.metadataCache.getFileCache(file);
+
       if (cache?.tags) {
-        for (const t of cache.tags) {
-          const tag = t.tag.replace(/^#/, '');
-          countMap.set(tag, (countMap.get(tag) || 0) + 1);
+        for (const t of cache.tags) addTag(t.tag);
+      }
+
+      if (cache?.frontmatter?.tags) {
+        const fmTags = cache.frontmatter.tags;
+        if (typeof fmTags === 'string') {
+          fmTags.split(/[, ]/).filter(Boolean).forEach(addTag);
+        } else if (Array.isArray(fmTags)) {
+          fmTags.forEach(addTag);
         }
       }
     }
+
     return Array.from(countMap.entries()).sort((a, b) => b[1] - a[1]);
+  }
+
+  parseTagsFromFrontmatter(fmLines: string[], tagIdx: number): string[] {
+    const line = fmLines[tagIdx];
+    const bracketMatch = line.match(/^(\s*)tags:\s*\[([^\]]*)\]\s*$/i);
+    if (bracketMatch) {
+      return bracketMatch[2].split(',').map((t) => t.trim()).filter(Boolean);
+    }
+
+    const listMatch = line.match(/^(\s*)tags:\s*$/i);
+    if (listMatch) {
+      const indent = listMatch[1];
+      const tags: string[] = [];
+      for (let i = tagIdx + 1; i < fmLines.length; i++) {
+        const itemMatch = fmLines[i].match(/^\s+-\s+(.+)$/);
+        if (itemMatch) {
+          tags.push(itemMatch[1].trim());
+        } else {
+          break;
+        }
+      }
+      return tags;
+    }
+
+    const flatMatch = line.match(/^(\s*)tags:\s*(.+)$/i);
+    if (flatMatch) {
+      return flatMatch[2].split(/[,，]/).map((t) => t.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+    }
+
+    return [];
   }
 
   async modifyTagsInFile(file: TFile, modifier: (tags: string[]) => string[]): Promise<boolean> {
     const content = await this.app.vault.read(file);
-    let frontmatter: string | null = null;
-    let body = content;
+    const lines = content.split('\n');
 
+    let endIdx = -1;
     if (content.startsWith('---')) {
-      const lines = content.split('\n');
-      let endIdx = -1;
       for (let i = 1; i < lines.length; i++) {
         if (lines[i].trimEnd() === '---') {
           endIdx = i;
           break;
         }
       }
-      if (endIdx !== -1) {
-        frontmatter = lines.slice(1, endIdx).join('\n');
-        body = lines.slice(endIdx + 1).join('\n');
-      }
     }
+    if (endIdx === -1) return false;
 
-    if (frontmatter === null) return false;
-
-    const fmLines = frontmatter.split('\n');
+    const fmLines = lines.slice(1, endIdx);
     const tagIdx = fmLines.findIndex((l) => /^\s*tags:/i.test(l));
     if (tagIdx === -1) return false;
 
-    const line = fmLines[tagIdx];
-    const bracketMatch = line.match(/^(\s*tags:\s*)(\[?)([^\]]*)(\]?)\s*$/i);
-    if (!bracketMatch) return false;
-
-    const currentTags = bracketMatch[3].split(',').map((t) => t.trim()).filter(Boolean);
+    const currentTags = this.parseTagsFromFrontmatter(fmLines, tagIdx);
     const newTags = modifier(currentTags);
 
     if (newTags.length === currentTags.length && newTags.every((t, i) => t === currentTags[i])) {
       return false;
     }
 
-    fmLines[tagIdx] = newTags.length > 0 ? `tags: [${newTags.join(', ')}]` : 'tags: []';
-    await this.app.vault.modify(file, `---\n${fmLines.join('\n')}\n---\n${body}`);
+    const listIndent = fmLines[tagIdx].match(/^(\s*)tags:/i)![1];
+
+    if (fmLines[tagIdx].match(/^(\s*)tags:\s*$/i)) {
+      let removeCount = 0;
+      for (let i = tagIdx + 1; i < fmLines.length; i++) {
+        if (fmLines[i].match(/^\s+-\s+/)) {
+          removeCount++;
+        } else {
+          break;
+        }
+      }
+      fmLines.splice(tagIdx + 1, removeCount);
+    }
+
+    if (newTags.length === 0) {
+      fmLines[tagIdx] = `${listIndent}tags: []`;
+    } else {
+      fmLines[tagIdx] = `${listIndent}tags: [${newTags.join(', ')}]`;
+    }
+
+    lines.splice(1, endIdx - 1, ...fmLines);
+    await this.app.vault.modify(file, lines.join('\n'));
     return true;
   }
 
@@ -289,10 +354,12 @@ export class TagSuggestPlugin extends Plugin {
       }
 
       let merged = 0, deleted = 0;
+      const detailLines: string[] = [];
       const allFiles = this.app.vault.getMarkdownFiles();
 
       for (const op of ops) {
         if (op.type === 'merge' && op.from && op.to) {
+          let count = 0;
           for (const file of allFiles) {
             const changed = await this.modifyTagsInFile(file, (tags) => {
               const hasFrom = tags.includes(op.from!);
@@ -301,19 +368,34 @@ export class TagSuggestPlugin extends Plugin {
               if (!filtered.includes(op.to!)) filtered.push(op.to!);
               return filtered;
             });
-            if (changed) merged++;
+            if (changed) count++;
+          }
+          if (count > 0) {
+            merged++;
+            detailLines.push(`合并: ${op.from} → ${op.to}（影响 ${count} 个文件）`);
           }
         } else if (op.type === 'delete' && op.tag) {
+          let count = 0;
           for (const file of allFiles) {
             const changed = await this.modifyTagsInFile(file, (tags) => {
               return tags.filter((t) => t !== op.tag!);
             });
-            if (changed) deleted++;
+            if (changed) count++;
+          }
+          if (count > 0) {
+            deleted++;
+            detailLines.push(`删除: ${op.tag}（影响 ${count} 个文件）`);
           }
         }
       }
 
-      new Notice(`整理完成！合并 ${merged} 次，删除 ${deleted} 次`);
+      const summary = `整理完成！合并 ${merged} 个标签，删除 ${deleted} 个标签`;
+      console.log(summary + '\n' + detailLines.join('\n'));
+
+      const resultMsg = detailLines.length > 0
+        ? summary + '\n\n' + detailLines.join('\n')
+        : summary;
+      new Notice(resultMsg, 8000);
     } catch (e) {
       console.error('整理标签失败:', e);
       new Notice('整理标签失败: ' + (e as Error).message);
@@ -324,54 +406,46 @@ export class TagSuggestPlugin extends Plugin {
     try {
       const content = await this.app.vault.read(file);
       const tagList = tags.join(', ');
+      const lines = content.split('\n');
 
-      let frontmatter: string | null = null;
-      let body = content;
-
+      let endIdx = -1;
       if (content.startsWith('---')) {
-        const lines = content.split('\n');
-        let endIdx = -1;
         for (let i = 1; i < lines.length; i++) {
           if (lines[i].trimEnd() === '---') {
             endIdx = i;
             break;
           }
         }
-        if (endIdx !== -1) {
-          frontmatter = lines.slice(1, endIdx).join('\n');
-          body = lines.slice(endIdx + 1).join('\n');
-        }
       }
 
-      let newContent: string;
-
-      if (frontmatter !== null) {
-        const fmLines = frontmatter.split('\n');
+      if (endIdx !== -1) {
+        const fmLines = lines.slice(1, endIdx);
         const tagIdx = fmLines.findIndex((l) => /^\s*tags:/i.test(l));
 
         if (tagIdx !== -1) {
-          const line = fmLines[tagIdx];
-          const bracketMatch = line.match(/^(\s*tags:\s*)(\[?)([^\]]*)(\]?)\s*$/i);
-          if (bracketMatch) {
-            const existingTags = bracketMatch[3]
-              .split(',')
-              .map((t: string) => t.trim())
-              .filter(Boolean);
-            const merged = [...new Set([...existingTags, ...tags])];
-            fmLines[tagIdx] = `tags: [${merged.join(', ')}]`;
-          } else {
-            fmLines[tagIdx] = `tags: [${tagList}]`;
+          const existingTags = this.parseTagsFromFrontmatter(fmLines, tagIdx);
+          const merged = [...new Set([...existingTags, ...tags])];
+
+          if (fmLines[tagIdx].match(/^(\s*)tags:\s*$/i)) {
+            let removeCount = 0;
+            for (let i = tagIdx + 1; i < fmLines.length; i++) {
+              if (fmLines[i].match(/^\s+-\s+/)) removeCount++;
+              else break;
+            }
+            fmLines.splice(tagIdx + 1, removeCount);
           }
+
+          fmLines[tagIdx] = `tags: [${merged.join(', ')}]`;
         } else {
           fmLines.push(`tags: [${tagList}]`);
         }
 
-        newContent = `---\n${fmLines.join('\n')}\n---\n${body}`;
+        lines.splice(1, endIdx - 1, ...fmLines);
+        await this.app.vault.modify(file, lines.join('\n'));
       } else {
-        newContent = `---\ntags: [${tagList}]\n---\n\n${content}`;
+        await this.app.vault.modify(file, `---\ntags: [${tagList}]\n---\n\n${content}`);
       }
 
-      await this.app.vault.modify(file, newContent);
       new Notice('标签已添加到文档');
     } catch (e) {
       console.error('添加标签失败:', e);
