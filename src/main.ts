@@ -114,6 +114,35 @@ export class TagSuggestPlugin extends Plugin {
         .tag-suggest-file-item:hover { background: var(--background-modifier-hover); }
         .tag-suggest-file-name { font-weight: 600; font-size: 0.95em; }
         .tag-suggest-file-path { font-size: 0.8em; color: var(--text-muted); margin-top: 0.15em; }
+
+        .tag-manager-modal { --modal-max-width: 95vw; --modal-max-height: 95vh; }
+        .tag-manager-modal .modal-content { display: flex; flex-direction: column; height: 100%; padding: 1.5em; overflow: hidden; }
+        .tag-manager-header { display: flex; align-items: baseline; gap: 1em; margin-bottom: 0.5em; }
+        .tag-manager-header h2 { margin: 0; }
+        .tag-manager-count { color: var(--text-muted); font-size: 0.9em; }
+        .tag-manager-search { width: 100%; margin-bottom: 0.8em; padding: 0.6em; border-radius: 6px; border: 1px solid var(--background-modifier-border); background: var(--background-primary); color: var(--text-normal); font-size: 0.95em; }
+        .tag-manager-table { flex: 1; overflow-y: auto; border: 1px solid var(--background-modifier-border); border-radius: 6px; background: var(--background-primary); }
+        .tag-manager-empty { padding: 2em; text-align: center; color: var(--text-muted); }
+        .tag-manager-row { display: flex; align-items: center; gap: 0.8em; padding: 0.6em 0.8em; border-bottom: 1px solid var(--background-modifier-border); transition: background 0.1s; }
+        .tag-manager-row:last-child { border-bottom: none; }
+        .tag-manager-row:hover { background: var(--background-modifier-hover); }
+        .tag-manager-title { flex: 1; display: flex; align-items: center; gap: 0.6em; min-width: 0; }
+        .tag-manager-name { font-weight: 600; font-size: 0.95em; word-break: break-all; }
+        .tag-manager-badge { font-size: 0.75em; padding: 0.1em 0.5em; border-radius: 3px; white-space: nowrap; }
+        .tag-manager-badge.fm { background: var(--interactive-accent); color: var(--text-on-accent); }
+        .tag-manager-badge.inline { background: var(--background-modifier-border); color: var(--text-muted); }
+        .tag-manager-badge.both { background: var(--color-green); color: #fff; }
+        .tag-manager-row .tag-manager-count { color: var(--text-muted); font-size: 0.85em; white-space: nowrap; min-width: 3em; text-align: right; }
+        .tag-manager-actions { display: flex; gap: 0.4em; flex-shrink: 0; }
+        .tag-manager-btn { padding: 0.3em 0.8em; font-size: 0.85em; border-radius: 4px; border: 1px solid var(--background-modifier-border); background: var(--background-secondary); color: var(--text-normal); cursor: pointer; }
+        .tag-manager-btn:hover { background: var(--background-modifier-hover); }
+        .tag-manager-btn.primary { background: var(--interactive-accent); color: var(--text-on-accent); border-color: var(--interactive-accent); }
+        .tag-manager-btn.primary:hover { background: var(--interactive-accent-hover); }
+        .tag-manager-btn.danger { border-color: var(--text-error); color: var(--text-error); }
+        .tag-manager-btn.danger:hover { background: var(--text-error); color: var(--text-on-accent); }
+        .tag-manager-btn.disabled { opacity: 0.4; cursor: not-allowed; }
+        .tag-manager-input { flex: 1; min-width: 120px; padding: 0.3em 0.5em; border-radius: 4px; border: 1px solid var(--interactive-accent); background: var(--background-primary); color: var(--text-normal); font-size: 0.9em; }
+        .tag-manager-select { max-width: 180px; padding: 0.3em; border-radius: 4px; border: 1px solid var(--background-modifier-border); background: var(--background-primary); color: var(--text-normal); font-size: 0.85em; }
       `,
     });
     this.register(() => styleEl.remove());
