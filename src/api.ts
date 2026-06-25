@@ -175,12 +175,16 @@ export interface CleanupOp {
   tag?: string;
 }
 
+const MAX_TAGS_FOR_CLEANUP = 200;
+
 export async function suggestTagCleanup(
   plugin: TagSuggestPlugin,
   tagsWithCount: [string, number][],
   principles: string,
 ): Promise<CleanupOp[]> {
-  const tagListStr = tagsWithCount.map(([t, c]) => `"${t}" (${c}次)`).join('\n');
+  const sorted = [...tagsWithCount].sort((a, b) => b[1] - a[1]);
+  const truncated = sorted.slice(0, MAX_TAGS_FOR_CLEANUP);
+  const tagListStr = truncated.map(([t, c]) => `"${t}" (${c}次)`).join('\n');
   const systemPrompt = `你是一个标签管理专家。请根据用户的原则和标签使用情况，决定哪些标签需要合并或删除。
 判断"无意义标签"的标准：
 - 乱码、测试字符、无实际含义的拼音组合
@@ -195,42 +199,51 @@ export async function suggestTagCleanup(
   const userContent = `原则：
 ${principles || '无特殊原则，自行判断'}
 
-当前库所有标签及使用次数：
+当前库所有标签（共 ${tagsWithCount.length} 个，仅显示前 ${truncated.length} 个按频率排序）及使用次数：
 ${tagListStr}
 
 请分析并返回 JSON 操作数组。`;
 
-  switch (plugin.settings.aiModel) {
-    case 'ollama': {
-      if (!plugin.settings.ollamaHost) throw new Error('请先设置 Ollama 主机地址');
-      const res = await fetch(`${plugin.settings.ollamaHost}/api/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: plugin.settings.ollamaModel, prompt: `${systemPrompt}\n\n${userContent}`, stream: false }),
-      });
-      if (!res.ok) throw new Error(`Ollama 请求失败: ${res.status}`);
-      const d = await res.json();
-      return parseCleanupResponse(d.response || '[]');
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => abortController.abort(), 60000);
+
+  try {
+    switch (plugin.settings.aiModel) {
+      case 'ollama': {
+        if (!plugin.settings.ollamaHost) throw new Error('请先设置 Ollama 主机地址');
+        const res = await fetch(`${plugin.settings.ollamaHost}/api/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: plugin.settings.ollamaModel, prompt: `${systemPrompt}\n\n${userContent}`, stream: false }),
+          signal: abortController.signal,
+        });
+        if (!res.ok) throw new Error(`Ollama 请求失败: ${res.status}`);
+        const d = await res.json();
+        return parseCleanupResponse(d.response || '[]');
+      }
+      case 'deepseek': {
+        if (!plugin.settings.deepseekApiKey) throw new Error('请先设置 DeepSeek API Key');
+        const res = await fetch('https://api.deepseek.com/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${plugin.settings.deepseekApiKey}` },
+          body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userContent }], stream: false }),
+          signal: abortController.signal,
+        });
+        if (!res.ok) throw new Error(`DeepSeek 请求失败: ${res.status}`);
+        const d = await res.json();
+        return parseCleanupResponse(d.choices[0]?.message?.content || '[]');
+      }
+      default: {
+        if (!plugin.settings.apiKey) throw new Error('请先设置 ChatGPT API Key');
+        const res = await plugin.openai.chat.completions.create({
+          model: 'gpt-3.5-turbo',
+          messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userContent }],
+        });
+        return parseCleanupResponse(res.choices[0]?.message?.content || '[]');
+      }
     }
-    case 'deepseek': {
-      if (!plugin.settings.deepseekApiKey) throw new Error('请先设置 DeepSeek API Key');
-      const res = await fetch('https://api.deepseek.com/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${plugin.settings.deepseekApiKey}` },
-        body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userContent }], stream: false }),
-      });
-      if (!res.ok) throw new Error(`DeepSeek 请求失败: ${res.status}`);
-      const d = await res.json();
-      return parseCleanupResponse(d.choices[0]?.message?.content || '[]');
-    }
-    default: {
-      if (!plugin.settings.apiKey) throw new Error('请先设置 ChatGPT API Key');
-      const res = await plugin.openai.chat.completions.create({
-        model: 'gpt-3.5-turbo',
-        messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userContent }],
-      });
-      return parseCleanupResponse(res.choices[0]?.message?.content || '[]');
-    }
+  } finally {
+    clearTimeout(timeout);
   }
 }
 

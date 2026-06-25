@@ -7,6 +7,12 @@ import { TagSuggestSettingTab } from './settings-tab';
 import { RenameModal } from './rename-modal';
 import { suggestTags, suggestTitle, suggestTagCleanup, CleanupOp } from './api';
 
+interface TagOperation {
+  type: 'merge' | 'delete';
+  tag: string;
+  targetTag?: string;
+}
+
 const TAG_ICON = `<svg viewBox="0 0 1024 1024" width="100" height="100" xmlns="http://www.w3.org/2000/svg">
   <path fill="currentColor" d="M426.08 649.232l56.576 56.56L690.544 497.92l-56.56-56.56L426.08 649.232z m100.64-315.136L318.832 541.984l56.56 56.56 207.888-207.888-56.56-56.56zM957.424 58.912L502.4 31.952 25.616 508.384l488.56 488.512 477.008-476.64-33.76-461.344zM514.192 883.792L138.784 508.4 533.552 113.936 882.72 134.64l25.984 354.912-394.528 394.24z m162.896-638.752a72 72 0 1 0 101.84 101.824 72 72 0 1 0-101.84-101.824z"/>
 </svg>`;
@@ -419,59 +425,124 @@ export class TagSuggestPlugin extends Plugin {
         return;
       }
 
-      const totalOps = ops.reduce((sum, op) => {
-        if (op.type === 'merge' && op.from) return sum + (tagMap.get(op.from)?.length || 0);
-        if (op.type === 'delete' && op.tag) return sum + (tagMap.get(op.tag)?.length || 0);
-        return sum;
-      }, 0);
-      let processed = 0;
-
-      let merged = 0, deleted = 0;
-      const detailLines: string[] = [];
-
+      // 构建文件 → 操作列表映射
+      const fileOps = new Map<TFile, TagOperation[]>();
       for (const op of ops) {
         if (op.type === 'merge' && op.from && op.to) {
           const files = tagMap.get(op.from);
           if (!files || files.length === 0) continue;
-          let count = 0;
+          const tagOp: TagOperation = { type: 'merge', tag: op.from, targetTag: op.to };
           for (const file of files) {
-            processed++;
-            scanNotice.setMessage(`正在执行: 合并 ${op.from} → ${op.to} (${processed}/${totalOps})`);
-            const changed = await this.modifyTagsInFile(file, (tags) => {
-              const hasFrom = tags.includes(op.from!);
-              if (!hasFrom) return tags;
-              const filtered = tags.filter((t) => t !== op.from!);
-              if (!filtered.includes(op.to!)) filtered.push(op.to!);
-              return filtered;
-            });
-            if (changed) count++;
-          }
-          if (count > 0) {
-            merged++;
-            detailLines.push(`合并: ${op.from} → ${op.to}（影响 ${count} 个文件）`);
+            const existing = fileOps.get(file);
+            if (existing) {
+              existing.push(tagOp);
+            } else {
+              fileOps.set(file, [tagOp]);
+            }
           }
         } else if (op.type === 'delete' && op.tag) {
           const files = tagMap.get(op.tag);
           if (!files || files.length === 0) continue;
-          let count = 0;
+          const tagOp: TagOperation = { type: 'delete', tag: op.tag };
           for (const file of files) {
-            processed++;
-            scanNotice.setMessage(`正在执行: 删除 ${op.tag} (${processed}/${totalOps})`);
-            const changed = await this.modifyTagsInFile(file, (tags) => {
-              return tags.filter((t) => t !== op.tag!);
-            });
-            if (changed) count++;
-          }
-          if (count > 0) {
-            deleted++;
-            detailLines.push(`删除: ${op.tag}（影响 ${count} 个文件）`);
+            const existing = fileOps.get(file);
+            if (existing) {
+              existing.push(tagOp);
+            } else {
+              fileOps.set(file, [tagOp]);
+            }
           }
         }
       }
 
+      // 批量处理：每个文件只读写一次
+      const totalFiles = fileOps.size;
+      let processed = 0;
+
+      // 按操作类型统计（不是按文件）
+      const mergeFileCounts = new Map<string, number>();
+      const deleteFileCounts = new Map<string, number>();
+
+      for (const [file, ops] of fileOps) {
+        processed++;
+        scanNotice.setMessage(`正在执行批量操作 (${processed}/${totalFiles})...`);
+
+        const content = await this.app.vault.read(file);
+        const lines = content.split('\n');
+
+        let endIdx = -1;
+        if (content.startsWith('---')) {
+          for (let i = 1; i < lines.length; i++) {
+            if (lines[i].trimEnd() === '---') {
+              endIdx = i;
+              break;
+            }
+          }
+        }
+        if (endIdx === -1) continue;
+
+        const fmLines = lines.slice(1, endIdx);
+        const tagIdx = fmLines.findIndex((l) => /^\s*tags:/i.test(l));
+        if (tagIdx === -1) continue;
+
+        const currentTags = this.parseTagsFromFrontmatter(fmLines, tagIdx);
+        let tagSet = new Set(currentTags);
+
+        // 先删后合，避免冲突
+        let changedInFile = false;
+        for (const op of ops) {
+          if (op.type === 'delete' && tagSet.has(op.tag)) {
+            tagSet.delete(op.tag);
+            changedInFile = true;
+            deleteFileCounts.set(op.tag, (deleteFileCounts.get(op.tag) || 0) + 1);
+          }
+        }
+        for (const op of ops) {
+          if (op.type === 'merge' && tagSet.has(op.tag) && op.targetTag) {
+            tagSet.delete(op.tag);
+            tagSet.add(op.targetTag);
+            changedInFile = true;
+            mergeFileCounts.set(`${op.tag}→${op.targetTag}`, (mergeFileCounts.get(`${op.tag}→${op.targetTag}`) || 0) + 1);
+          }
+        }
+
+        if (!changedInFile) continue;
+
+        const newTags = Array.from(tagSet);
+        const listIndent = fmLines[tagIdx].match(/^(\s*)tags:/i)![1];
+
+        if (fmLines[tagIdx].match(/^(\s*)tags:\s*$/i)) {
+          let removeCount = 0;
+          for (let i = tagIdx + 1; i < fmLines.length; i++) {
+            if (fmLines[i].match(/^\s+-\s+/)) removeCount++;
+            else break;
+          }
+          fmLines.splice(tagIdx + 1, removeCount);
+        }
+
+        fmLines[tagIdx] = newTags.length === 0
+          ? `${listIndent}tags: []`
+          : `${listIndent}tags: [${newTags.join(', ')}]`;
+
+        lines.splice(1, endIdx - 1, ...fmLines);
+        await this.app.vault.modify(file, lines.join('\n'));
+      }
+
       scanNotice.hide();
 
-      const summary = `整理完成！合并 ${merged} 个标签，删除 ${deleted} 个标签`;
+      const merged = mergeFileCounts.size;
+      const deleted = deleteFileCounts.size;
+      const detailLines: string[] = [];
+
+      for (const [key, count] of mergeFileCounts) {
+        const [from, to] = key.split('→');
+        detailLines.push(`合并: ${from} → ${to}（影响 ${count} 个文件）`);
+      }
+      for (const [tag, count] of deleteFileCounts) {
+        detailLines.push(`删除: ${tag}（影响 ${count} 个文件）`);
+      }
+
+      const summary = `整理完成！合并 ${merged} 个标签，删除 ${deleted} 个标签，涉及 ${totalFiles} 个文件`;
       console.log(summary + '\n' + detailLines.join('\n'));
 
       const resultMsg = detailLines.length > 0
