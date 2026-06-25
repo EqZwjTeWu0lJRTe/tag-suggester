@@ -267,8 +267,10 @@ export class TagSuggestPlugin extends Plugin {
     return Array.from(countMap.entries()).sort((a, b) => b[1] - a[1]);
   }
 
-  async buildTagFileIndex(): Promise<Map<string, TFile[]>> {
+  async buildTagFileIndex(onProgress?: (current: number, total: number) => void): Promise<Map<string, TFile[]>> {
     const tagMap = new Map<string, TFile[]>();
+    const allFiles = this.app.vault.getMarkdownFiles();
+    const total = allFiles.length;
 
     const collectTag = (tag: unknown, file: TFile) => {
       if (!tag || typeof tag !== 'string') return;
@@ -282,7 +284,9 @@ export class TagSuggestPlugin extends Plugin {
       }
     };
 
-    for (const file of this.app.vault.getMarkdownFiles()) {
+    const batchSize = Math.max(1, Math.floor(total / 100) || 50);
+    for (let i = 0; i < total; i++) {
+      const file = allFiles[i];
       const cache = this.app.metadataCache.getFileCache(file);
 
       if (cache?.tags) {
@@ -296,6 +300,10 @@ export class TagSuggestPlugin extends Plugin {
         } else if (Array.isArray(fmTags)) {
           fmTags.forEach((t) => collectTag(t, file));
         }
+      }
+
+      if (onProgress && (i % batchSize === 0 || i === total - 1)) {
+        onProgress(i + 1, total);
       }
     }
 
@@ -385,26 +393,38 @@ export class TagSuggestPlugin extends Plugin {
   }
 
   async autoManageTags() {
+    const scanNotice = new Notice('正在扫描标签...', 0);
     try {
-      new Notice('正在扫描标签...');
-      const tagMap = await this.buildTagFileIndex();
+      const tagMap = await this.buildTagFileIndex((current, total) => {
+        scanNotice.setMessage(`正在扫描标签 (${current}/${total})...`);
+      });
 
       if (tagMap.size === 0) {
+        scanNotice.hide();
         new Notice('库中没有标签');
         return;
       }
+
+      scanNotice.setMessage(`扫描完成，共 ${tagMap.size} 个标签，正在调用 AI 分析...`);
 
       const tagsWithCount = Array.from(tagMap.entries()).map(
         ([tag, files]) => [tag, files.length] as [string, number],
       );
 
-      new Notice('正在分析标签...');
       const ops = await suggestTagCleanup(this, tagsWithCount, this.settings.tagManagePrinciples);
 
       if (ops.length === 0) {
-        new Notice('AI 认为当前标签无需整理');
+        scanNotice.hide();
+        new Notice('AI 认为当前标签无需整理，共扫描 ' + tagMap.size + ' 个标签');
         return;
       }
+
+      const totalOps = ops.reduce((sum, op) => {
+        if (op.type === 'merge' && op.from) return sum + (tagMap.get(op.from)?.length || 0);
+        if (op.type === 'delete' && op.tag) return sum + (tagMap.get(op.tag)?.length || 0);
+        return sum;
+      }, 0);
+      let processed = 0;
 
       let merged = 0, deleted = 0;
       const detailLines: string[] = [];
@@ -415,6 +435,8 @@ export class TagSuggestPlugin extends Plugin {
           if (!files || files.length === 0) continue;
           let count = 0;
           for (const file of files) {
+            processed++;
+            scanNotice.setMessage(`正在执行: 合并 ${op.from} → ${op.to} (${processed}/${totalOps})`);
             const changed = await this.modifyTagsInFile(file, (tags) => {
               const hasFrom = tags.includes(op.from!);
               if (!hasFrom) return tags;
@@ -433,6 +455,8 @@ export class TagSuggestPlugin extends Plugin {
           if (!files || files.length === 0) continue;
           let count = 0;
           for (const file of files) {
+            processed++;
+            scanNotice.setMessage(`正在执行: 删除 ${op.tag} (${processed}/${totalOps})`);
             const changed = await this.modifyTagsInFile(file, (tags) => {
               return tags.filter((t) => t !== op.tag!);
             });
@@ -445,6 +469,8 @@ export class TagSuggestPlugin extends Plugin {
         }
       }
 
+      scanNotice.hide();
+
       const summary = `整理完成！合并 ${merged} 个标签，删除 ${deleted} 个标签`;
       console.log(summary + '\n' + detailLines.join('\n'));
 
@@ -453,6 +479,7 @@ export class TagSuggestPlugin extends Plugin {
         : summary;
       new Notice(resultMsg, 8000);
     } catch (e) {
+      scanNotice.hide();
       console.error('整理标签失败:', e);
       new Notice('整理标签失败: ' + (e as Error).message);
     }
