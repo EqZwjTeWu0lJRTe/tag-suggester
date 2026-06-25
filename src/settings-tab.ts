@@ -1,5 +1,6 @@
 import { App, PluginSettingTab, Setting, Modal, TFile, Notice } from 'obsidian';
 import { TagSuggestPlugin } from './main';
+import { TagManagerModal } from './tag-manager-modal';
 
 class SystemPromptFileModal extends Modal {
   constructor(
@@ -273,6 +274,17 @@ export class TagSuggestSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.tagManagePrinciples = value;
             await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName('手动标签管理')
+      .setDesc('直接重命名、合并或删除标签，无需 AI')
+      .addButton((btn) =>
+        btn
+          .setButtonText('打开标签管理器')
+          .onClick(() => {
+            new TagManagerModal(this.plugin).open();
           }),
       );
 
