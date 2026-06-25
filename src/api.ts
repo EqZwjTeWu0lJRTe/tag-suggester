@@ -5,7 +5,7 @@ const MAX_CONTENT_LENGTH = 1500;
 async function resolveSystemPrompt(plugin: TagSuggestPlugin): Promise<string> {
   const noteContent = await plugin.getSystemPromptContent();
   if (noteContent) return noteContent;
-  return `你是一个文档标签推荐专家。请为文档内容推荐 ${plugin.settings.tagCount} 个最合适的标签。`;
+  return `你是一个文档标签推荐专家。请为文档内容推荐 ${plugin.settings.tagCount} 个最合适的标签。标签支持多级嵌套（如：学科/内科/心血管），当内容涉及多个层级时优先使用嵌套标签。`;
 }
 
 async function resolveSystemPromptForTitle(plugin: TagSuggestPlugin): Promise<string> {
@@ -28,7 +28,7 @@ export async function suggestTagsWithChatGPT(
       },
       {
         role: 'user',
-        content: `请为以下文档内容推荐标签。只返回标签列表，用逗号分隔，不要包含其他解释。
+        content: `请为以下文档内容推荐标签。支持使用嵌套标签（如：学科/内科/心血管），嵌套标签的每一级用 / 分隔。只返回标签列表，用逗号分隔，不要包含其他解释。
 
 ${content.slice(0, MAX_CONTENT_LENGTH)}`,
       },
@@ -53,9 +53,9 @@ export async function suggestTagsWithOllama(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: plugin.settings.ollamaModel,
-      prompt: `${systemPrompt}
+       prompt: `${systemPrompt}
 
-请为以下内容生成 ${plugin.settings.tagCount} 个标签,只返回标签名称,用逗号分隔:
+请为以下内容生成 ${plugin.settings.tagCount} 个标签。支持使用嵌套标签（如：学科/内科/心血管），嵌套标签的每一级用 / 分隔。只返回标签名称，用逗号分隔:
 
 ${content.slice(0, MAX_CONTENT_LENGTH)}`,
       stream: false,
@@ -96,7 +96,7 @@ export async function suggestTagsWithDeepseek(
         },
         {
           role: 'user',
-          content: `请为以下文档内容推荐标签。只返回标签列表，用逗号分隔，不要包含其他解释。\n\n${content.slice(0, MAX_CONTENT_LENGTH)}`,
+          content: `请为以下文档内容推荐标签。支持使用嵌套标签（如：学科/内科/心血管），嵌套标签的每一级用 / 分隔。只返回标签列表，用逗号分隔，不要包含其他解释。\n\n${content.slice(0, MAX_CONTENT_LENGTH)}`,
         },
       ],
       stream: false,

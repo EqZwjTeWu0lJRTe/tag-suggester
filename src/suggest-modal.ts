@@ -37,8 +37,9 @@ export class TagSuggestModal extends Modal {
 要求：
 1. 标签必须与以下已有标签完全不同：${Array.from(this.previousTags).join(', ')}
 2. 标签应该简洁且相关
-3. 只返回标签名称，用逗号分隔
-4. 从不同角度思考，避免相似的标签
+3. 支持使用嵌套标签（如：学科/内科/心血管），嵌套标签的每一级用 / 分隔
+4. 只返回标签名称，用逗号分隔
+5. 从不同角度思考，避免相似的标签
 
 文档内容：${this.content.slice(0, 1500)}`;
 
@@ -51,8 +52,9 @@ export class TagSuggestModal extends Modal {
           (tag) =>
             !Array.from(this.previousTags).some(
               (existing) =>
-                tag.includes(existing) ||
-                existing.includes(tag) ||
+                tag === existing ||
+                tag.split('/').includes(existing) ||
+                existing.split('/').includes(tag) ||
                 calculateSimilarity(tag, existing) > 0.7,
             ),
         );
@@ -122,9 +124,14 @@ export class TagSuggestModal extends Modal {
       .addEventListener('click', () => this.regenerateTags());
 
     buttons.createEl('button', { text: '确认', cls: 'mod-cta' })
-      .addEventListener('click', () => {
+      .addEventListener('click', async () => {
+        const tags = Array.from(this.selectedTags);
         this.close();
-        this.onConfirm(Array.from(this.selectedTags));
+        try {
+          await this.onConfirm(tags);
+        } catch (e) {
+          console.error('[TagSuggest] 确认标签时出错:', e);
+        }
       });
 
     buttons.createEl('button', { text: '取消' })

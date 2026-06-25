@@ -125,8 +125,12 @@ export class TagSuggestPlugin extends Plugin {
     if (!this.settings.systemPromptNotePath) return null;
     const file = this.app.vault.getAbstractFileByPath(this.settings.systemPromptNotePath);
     if (file instanceof TFile) {
-      return await this.app.vault.read(file);
+      const content = await this.app.vault.read(file);
+      console.log(`[TagSuggest] 使用标签提示词笔记: ${file.path} (${content.length} 字符)`);
+      return content;
     }
+    console.warn(`[TagSuggest] 标签提示词笔记未找到: ${this.settings.systemPromptNotePath}`);
+    new Notice(`标签提示词笔记未找到: ${this.settings.systemPromptNotePath}`);
     return null;
   }
 
@@ -134,15 +138,20 @@ export class TagSuggestPlugin extends Plugin {
     if (!this.settings.systemPromptTitleNotePath) return null;
     const file = this.app.vault.getAbstractFileByPath(this.settings.systemPromptTitleNotePath);
     if (file instanceof TFile) {
-      return await this.app.vault.read(file);
+      const content = await this.app.vault.read(file);
+      console.log(`[TagSuggest] 使用标题提示词笔记: ${file.path} (${content.length} 字符)`);
+      return content;
     }
+    console.warn(`[TagSuggest] 标题提示词笔记未找到: ${this.settings.systemPromptTitleNotePath}`);
+    new Notice(`标题提示词笔记未找到: ${this.settings.systemPromptTitleNotePath}`);
     return null;
   }
 
   async getAllExistingTags(): Promise<string[]> {
     const tagSet = new Set<string>();
 
-    const addTag = (tag: string) => {
+    const addTag = (tag: unknown) => {
+      if (!tag || typeof tag !== 'string') return;
       const t = tag.replace(/^#/, '').trim();
       if (t) tagSet.add(t);
     };
@@ -190,10 +199,13 @@ export class TagSuggestPlugin extends Plugin {
       const tags = await suggestTags(this, content);
 
       if (tags && tags.length > 0) {
+        console.log(`[TagSuggest] 建议标签: [${tags.join(', ')}]`);
         new TagSuggestModal(this.app, tags, content, this, async (selectedTags) => {
           if (selectedTags.length > 0) {
+            console.log(`[TagSuggest] 用户确认标签: [${selectedTags.join(', ')}]`);
             await this.addTagsToFile(targetFile, selectedTags);
-            new Notice(`已添加 ${selectedTags.length} 个标签`);
+          } else {
+            console.log('[TagSuggest] 用户未选择任何标签');
           }
         }).open();
       } else {
@@ -229,7 +241,8 @@ export class TagSuggestPlugin extends Plugin {
   async getAllTagsWithCount(): Promise<[string, number][]> {
     const countMap = new Map<string, number>();
 
-    const addTag = (tag: string) => {
+    const addTag = (tag: unknown) => {
+      if (!tag || typeof tag !== 'string') return;
       const t = tag.replace(/^#/, '').trim();
       if (t) countMap.set(t, (countMap.get(t) || 0) + 1);
     };
@@ -254,6 +267,41 @@ export class TagSuggestPlugin extends Plugin {
     return Array.from(countMap.entries()).sort((a, b) => b[1] - a[1]);
   }
 
+  async buildTagFileIndex(): Promise<Map<string, TFile[]>> {
+    const tagMap = new Map<string, TFile[]>();
+
+    const collectTag = (tag: unknown, file: TFile) => {
+      if (!tag || typeof tag !== 'string') return;
+      const t = tag.replace(/^#/, '').trim();
+      if (!t) return;
+      const files = tagMap.get(t);
+      if (files) {
+        files.push(file);
+      } else {
+        tagMap.set(t, [file]);
+      }
+    };
+
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      const cache = this.app.metadataCache.getFileCache(file);
+
+      if (cache?.tags) {
+        for (const t of cache.tags) collectTag(t.tag, file);
+      }
+
+      if (cache?.frontmatter?.tags) {
+        const fmTags = cache.frontmatter.tags;
+        if (typeof fmTags === 'string') {
+          fmTags.split(/[, ]/).filter(Boolean).forEach((t) => collectTag(t, file));
+        } else if (Array.isArray(fmTags)) {
+          fmTags.forEach((t) => collectTag(t, file));
+        }
+      }
+    }
+
+    return tagMap;
+  }
+
   parseTagsFromFrontmatter(fmLines: string[], tagIdx: number): string[] {
     const line = fmLines[tagIdx];
     const bracketMatch = line.match(/^(\s*)tags:\s*\[([^\]]*)\]\s*$/i);
@@ -263,12 +311,13 @@ export class TagSuggestPlugin extends Plugin {
 
     const listMatch = line.match(/^(\s*)tags:\s*$/i);
     if (listMatch) {
-      const indent = listMatch[1];
       const tags: string[] = [];
       for (let i = tagIdx + 1; i < fmLines.length; i++) {
         const itemMatch = fmLines[i].match(/^\s+-\s+(.+)$/);
-        if (itemMatch) {
+        if (itemMatch && itemMatch[1].trim()) {
           tags.push(itemMatch[1].trim());
+        } else if (itemMatch) {
+          continue;
         } else {
           break;
         }
@@ -338,12 +387,16 @@ export class TagSuggestPlugin extends Plugin {
   async autoManageTags() {
     try {
       new Notice('正在扫描标签...');
-      const tagsWithCount = await this.getAllTagsWithCount();
+      const tagMap = await this.buildTagFileIndex();
 
-      if (tagsWithCount.length === 0) {
+      if (tagMap.size === 0) {
         new Notice('库中没有标签');
         return;
       }
+
+      const tagsWithCount = Array.from(tagMap.entries()).map(
+        ([tag, files]) => [tag, files.length] as [string, number],
+      );
 
       new Notice('正在分析标签...');
       const ops = await suggestTagCleanup(this, tagsWithCount, this.settings.tagManagePrinciples);
@@ -355,12 +408,13 @@ export class TagSuggestPlugin extends Plugin {
 
       let merged = 0, deleted = 0;
       const detailLines: string[] = [];
-      const allFiles = this.app.vault.getMarkdownFiles();
 
       for (const op of ops) {
         if (op.type === 'merge' && op.from && op.to) {
+          const files = tagMap.get(op.from);
+          if (!files || files.length === 0) continue;
           let count = 0;
-          for (const file of allFiles) {
+          for (const file of files) {
             const changed = await this.modifyTagsInFile(file, (tags) => {
               const hasFrom = tags.includes(op.from!);
               if (!hasFrom) return tags;
@@ -375,8 +429,10 @@ export class TagSuggestPlugin extends Plugin {
             detailLines.push(`合并: ${op.from} → ${op.to}（影响 ${count} 个文件）`);
           }
         } else if (op.type === 'delete' && op.tag) {
+          const files = tagMap.get(op.tag);
+          if (!files || files.length === 0) continue;
           let count = 0;
-          for (const file of allFiles) {
+          for (const file of files) {
             const changed = await this.modifyTagsInFile(file, (tags) => {
               return tags.filter((t) => t !== op.tag!);
             });
@@ -404,6 +460,7 @@ export class TagSuggestPlugin extends Plugin {
 
   async addTagsToFile(file: TFile, tags: string[]) {
     try {
+      console.log(`[TagSuggest] addTagsToFile: ${file.path}, tags=[${tags.join(', ')}]`);
       const content = await this.app.vault.read(file);
       const tagList = tags.join(', ');
       const lines = content.split('\n');
@@ -417,14 +474,18 @@ export class TagSuggestPlugin extends Plugin {
           }
         }
       }
+      console.log(`[TagSuggest] endIdx=${endIdx}, lines.length=${lines.length}`);
 
       if (endIdx !== -1) {
         const fmLines = lines.slice(1, endIdx);
         const tagIdx = fmLines.findIndex((l) => /^\s*tags:/i.test(l));
+        console.log(`[TagSuggest] tagIdx=${tagIdx}, fmLines count=${fmLines.length}`);
 
         if (tagIdx !== -1) {
           const existingTags = this.parseTagsFromFrontmatter(fmLines, tagIdx);
+          console.log(`[TagSuggest] existingTags=[${existingTags.join(', ')}]`);
           const merged = [...new Set([...existingTags, ...tags])];
+          console.log(`[TagSuggest] merged=[${merged.join(', ')}]`);
 
           if (fmLines[tagIdx].match(/^(\s*)tags:\s*$/i)) {
             let removeCount = 0;
@@ -437,18 +498,21 @@ export class TagSuggestPlugin extends Plugin {
 
           fmLines[tagIdx] = `tags: [${merged.join(', ')}]`;
         } else {
+          console.log(`[TagSuggest] tags line not found, adding new tags line`);
           fmLines.push(`tags: [${tagList}]`);
         }
 
         lines.splice(1, endIdx - 1, ...fmLines);
         await this.app.vault.modify(file, lines.join('\n'));
       } else {
+        console.log(`[TagSuggest] no frontmatter, creating new`);
         await this.app.vault.modify(file, `---\ntags: [${tagList}]\n---\n\n${content}`);
       }
 
+      console.log(`[TagSuggest] done: ${file.path}`);
       new Notice('标签已添加到文档');
     } catch (e) {
-      console.error('添加标签失败:', e);
+      console.error('[TagSuggest] 添加标签失败:', e);
       new Notice('添加标签失败: ' + (e as Error).message);
     }
   }
