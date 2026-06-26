@@ -1,6 +1,5 @@
 import { App, PluginSettingTab, Setting, Modal, TFile, Notice } from 'obsidian';
 import { TagSuggestPlugin } from './main';
-import { TagManagerModal } from './tag-manager-modal';
 
 class SystemPromptFileModal extends Modal {
   constructor(
@@ -284,7 +283,7 @@ export class TagSuggestSettingTab extends PluginSettingTab {
         btn
           .setButtonText('打开标签管理器')
           .onClick(() => {
-            new TagManagerModal(this.plugin).open();
+            this.plugin.openTagManager();
           }),
       );
 

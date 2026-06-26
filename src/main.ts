@@ -5,6 +5,7 @@ import { TagSuggestModal } from './suggest-modal';
 import { BatchSuggestModal } from './batch-modal';
 import { TagSuggestSettingTab } from './settings-tab';
 import { RenameModal } from './rename-modal';
+import { TagManagerView, VIEW_TYPE_TAG_MANAGER } from './tag-manager-view';
 import { suggestTags, suggestTitle, suggestTagCleanup, CleanupOp } from './api';
 
 interface TagOperation {
@@ -65,6 +66,14 @@ export class TagSuggestPlugin extends Plugin {
       callback: () => this.testAPIConnection(),
     });
 
+    this.addCommand({
+      id: 'open-tag-manager',
+      name: '打开标签管理器',
+      callback: () => this.openTagManager(),
+    });
+
+    this.registerView(VIEW_TYPE_TAG_MANAGER, (leaf) => new TagManagerView(leaf, this));
+
     this.registerEvent(
       this.app.workspace.on('file-menu', (menu, file) => {
         if (file instanceof TFile && file.extension === 'md') {
@@ -116,25 +125,8 @@ export class TagSuggestPlugin extends Plugin {
         .tag-suggest-file-path { font-size: 0.8em; color: var(--text-muted); margin-top: 0.15em; }
 
         .tag-manager-modal { --modal-max-width: 95vw; --modal-max-height: 95vh; }
-        .tag-manager-modal .modal-content { display: flex; flex-direction: column; height: 100%; padding: 1.5em; overflow: hidden; }
-        .tag-manager-header { display: flex; align-items: baseline; gap: 1em; margin-bottom: 0.5em; }
-        .tag-manager-header h2 { margin: 0; }
-        .tag-manager-count { color: var(--text-muted); font-size: 0.9em; }
-        .tag-manager-search { width: 100%; margin-bottom: 0.8em; padding: 0.6em; border-radius: 6px; border: 1px solid var(--background-modifier-border); background: var(--background-primary); color: var(--text-normal); font-size: 0.95em; }
-        .tag-manager-table { flex: 1; overflow-y: auto; border: 1px solid var(--background-modifier-border); border-radius: 6px; background: var(--background-primary); }
+        .tag-manager-modal .modal-content { padding: 1.5em; }
         .tag-manager-empty { padding: 2em; text-align: center; color: var(--text-muted); }
-        .tag-manager-row { display: flex; align-items: center; gap: 0.8em; padding: 0.6em 0.8em; border-bottom: 1px solid var(--background-modifier-border); transition: background 0.1s; }
-        .tag-manager-row:last-child { border-bottom: none; }
-        .tag-manager-row:hover { background: var(--background-modifier-hover); }
-        .tag-manager-title { flex: 1; display: flex; align-items: center; gap: 0.6em; min-width: 0; }
-        .tag-manager-name { font-weight: 600; font-size: 0.95em; word-break: break-all; }
-        .tag-manager-badge { font-size: 0.75em; padding: 0.1em 0.5em; border-radius: 3px; white-space: nowrap; }
-        .tag-manager-badge.fm { background: var(--interactive-accent); color: var(--text-on-accent); }
-        .tag-manager-badge.inline { background: var(--background-modifier-border); color: var(--text-muted); }
-        .tag-manager-badge.both { background: var(--color-green); color: #fff; }
-        .tag-manager-row .tag-manager-count { color: var(--text-muted); font-size: 0.85em; white-space: nowrap; min-width: 3em; text-align: right; }
-        .tag-manager-actions { display: flex; gap: 0.4em; flex-shrink: 0; }
-        .tag-manager-btn { padding: 0.3em 0.8em; font-size: 0.85em; border-radius: 4px; border: 1px solid var(--background-modifier-border); background: var(--background-secondary); color: var(--text-normal); cursor: pointer; }
         .tag-manager-btn:hover { background: var(--background-modifier-hover); }
         .tag-manager-btn.primary { background: var(--interactive-accent); color: var(--text-on-accent); border-color: var(--interactive-accent); }
         .tag-manager-btn.primary:hover { background: var(--interactive-accent-hover); }
@@ -349,16 +341,16 @@ export class TagSuggestPlugin extends Plugin {
     const line = fmLines[tagIdx];
     const bracketMatch = line.match(/^(\s*)tags:\s*\[([^\]]*)\]\s*$/i);
     if (bracketMatch) {
-      return bracketMatch[2].split(',').map((t) => t.trim()).filter(Boolean);
+      return bracketMatch[2].split(',').map((t) => t.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
     }
 
     const listMatch = line.match(/^(\s*)tags:\s*$/i);
     if (listMatch) {
       const tags: string[] = [];
       for (let i = tagIdx + 1; i < fmLines.length; i++) {
-        const itemMatch = fmLines[i].match(/^\s+-\s+(.+)$/);
+        const itemMatch = fmLines[i].match(/^\s*-\s+(.+)$/);
         if (itemMatch && itemMatch[1].trim()) {
-          tags.push(itemMatch[1].trim());
+          tags.push(itemMatch[1].trim().replace(/^["']|["']$/g, ''));
         } else if (itemMatch) {
           continue;
         } else {
@@ -398,7 +390,10 @@ export class TagSuggestPlugin extends Plugin {
     const currentTags = this.parseTagsFromFrontmatter(fmLines, tagIdx);
     const newTags = modifier(currentTags);
 
+    console.log(`[modifyTagsInFile] ${file.path}: before=${JSON.stringify(currentTags)} after=${JSON.stringify(newTags)}`);
+
     if (newTags.length === currentTags.length && newTags.every((t, i) => t === currentTags[i])) {
+      console.log(`[modifyTagsInFile] ${file.path}: no change, skipping`);
       return false;
     }
 
@@ -407,7 +402,7 @@ export class TagSuggestPlugin extends Plugin {
     if (fmLines[tagIdx].match(/^(\s*)tags:\s*$/i)) {
       let removeCount = 0;
       for (let i = tagIdx + 1; i < fmLines.length; i++) {
-        if (fmLines[i].match(/^\s+-\s+/)) {
+        if (fmLines[i].match(/^\s*-\s+/)) {
           removeCount++;
         } else {
           break;
@@ -642,6 +637,16 @@ export class TagSuggestPlugin extends Plugin {
       console.error('[TagSuggest] 添加标签失败:', e);
       new Notice('添加标签失败: ' + (e as Error).message);
     }
+  }
+
+  openTagManager() {
+    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_TAG_MANAGER);
+    if (existing.length > 0) {
+      this.app.workspace.revealLeaf(existing[0]);
+      return;
+    }
+    const leaf = this.app.workspace.getLeaf('tab');
+    leaf.setViewState({ type: VIEW_TYPE_TAG_MANAGER, active: true });
   }
 
   async testAPIConnection() {

@@ -18,44 +18,53 @@ export class TagManagerModal extends Modal {
   }
 
   async onOpen() {
-    const tagMap = await this.plugin.buildTagFileIndex();
+    this.contentEl.empty();
+    const loadingEl = this.contentEl.createEl('p', { text: '正在扫描标签...', cls: 'tag-suggest-description' });
 
-    this.tags = [];
-    for (const [name, files] of tagMap) {
-      let fmCount = 0;
-      for (const file of files) {
-        const cache = this.app.metadataCache.getFileCache(file);
-        if (cache?.frontmatter?.tags) {
-          const fmTags = cache.frontmatter.tags;
-          if (typeof fmTags === 'string') {
-            if (fmTags.split(/[, ]/).map((t) => t.trim().replace(/^#/, '')).includes(name)) fmCount++;
-          } else if (Array.isArray(fmTags)) {
-            if (fmTags.some((t) => typeof t === 'string' && t.trim().replace(/^#/, '') === name)) fmCount++;
+    try {
+      const tagMap = await this.plugin.buildTagFileIndex();
+
+      this.tags = [];
+      for (const [name, files] of tagMap) {
+        let fmCount = 0;
+        for (const file of files) {
+          const cache = this.app.metadataCache.getFileCache(file);
+          if (cache?.frontmatter?.tags) {
+            const fmTags = cache.frontmatter.tags;
+            if (typeof fmTags === 'string') {
+              if (fmTags.split(/[, ]/).map((t) => t.trim().replace(/^#/, '')).includes(name)) fmCount++;
+            } else if (Array.isArray(fmTags)) {
+              if (fmTags.some((t) => typeof t === 'string' && t.trim().replace(/^#/, '') === name)) fmCount++;
+            }
           }
         }
+        this.tags.push({ name, files, totalCount: files.length, fmCount });
       }
-      this.tags.push({ name, files, totalCount: files.length, fmCount });
+
+      this.tags.sort((a, b) => b.totalCount - a.totalCount);
+    } catch (e) {
+      console.error('[TagManager] 扫描标签失败:', e);
+      loadingEl.setText('扫描标签失败: ' + (e as Error).message);
+      return;
     }
 
-    this.tags.sort((a, b) => b.totalCount - a.totalCount);
+    this.contentEl.empty();
     this.render();
   }
 
   render() {
     const { contentEl } = this;
-    contentEl.empty();
 
-    const header = contentEl.createDiv({ cls: 'tag-manager-header' });
-    header.createEl('h2', { text: '标签管理器' });
-    header.createEl('span', { text: `共 ${this.tags.length} 个标签`, cls: 'tag-manager-count' });
+    contentEl.createEl('h2', { text: '标签管理器' });
+    contentEl.createEl('p', { cls: 'tag-suggest-description' }).setText(`共 ${this.tags.length} 个标签`);
 
     const searchInput = contentEl.createEl('input', {
       type: 'text',
       placeholder: '搜索标签...',
-      cls: 'tag-manager-search',
+      cls: 'tag-suggest-file-search',
     });
 
-    const table = contentEl.createDiv({ cls: 'tag-manager-table' });
+    const table = contentEl.createDiv({ cls: 'tag-suggest-container' });
 
     const renderList = (filter: string) => {
       table.empty();
@@ -64,7 +73,7 @@ export class TagManagerModal extends Modal {
         : this.tags;
 
       if (filtered.length === 0) {
-        table.createEl('p', { text: '未找到匹配的标签', cls: 'tag-manager-empty' });
+        table.createEl('p', { text: '未找到匹配的标签', cls: 'tag-suggest-description' });
         return;
       }
 
